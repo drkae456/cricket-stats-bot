@@ -1,1 +1,9 @@
 # Ignore the cleaned_data folder and all its contents
+# Ignore the cleaned_data folder and all its contents
+/cleaned_data/
+
+# Don't ignore the cleaned_data.zip file
+!/cleaned_data.zip
+
+# Ignore the virtual environment folder
+/myenv/

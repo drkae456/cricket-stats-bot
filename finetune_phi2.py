@@ -499,6 +499,9 @@ Given the conditions and recent form, this match will likely be closely conteste
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         
+        # Set padding token to be the same as EOS token
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        
         # Load model with 4-bit quantization for memory efficiency
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
