@@ -214,69 +214,100 @@ class CricketAnalysisModel:
         
         return tokenized
     
-    def train(self, output_dir="cricket_model", num_train_epochs=3, per_device_train_batch_size=8):
-        """Train the model with parameters optimized for RTX 4090"""
+    def train(self):
+        """Train the model on the prepared data"""
         print("Starting training with RTX 4090 optimized parameters...")
         
         # Prepare training data
         training_data = self.prepare_training_data()
-        train_dataset = Dataset.from_list(training_data)
         
-        # Tokenize the dataset
-        def tokenize_function(examples):
-            prompt = self.format_prompt(examples["instruction"], examples["input"], examples["output"])
-            target = examples["output"]
-            
-            tokenized_prompt = self.tokenizer(prompt, truncation=True, max_length=512)
-            tokenized_target = self.tokenizer(target, truncation=True, max_length=512)
-            
-            # Combine prompt and target for training
-            input_ids = tokenized_prompt["input_ids"] + tokenized_target["input_ids"][1:]  # Skip the BOS token
-            attention_mask = tokenized_prompt["attention_mask"] + tokenized_target["attention_mask"][1:]
-            
-            # Create labels - set prompt tokens to -100 to ignore them in loss calculation
-            labels = [-100] * len(tokenized_prompt["input_ids"]) + tokenized_target["input_ids"][1:]
-            
-            return {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "labels": labels
-            }
+        # Convert to dataset format
+        dataset_dict = {
+            "instruction": [item["instruction"] for item in training_data],
+            "input": [item["input"] for item in training_data],
+            "output": [item["output"] for item in training_data]
+        }
+        dataset = Dataset.from_dict(dataset_dict)
         
-        tokenized_dataset = train_dataset.map(tokenize_function, remove_columns=["instruction", "input", "output"])
+        # Process the dataset
+        def preprocess_function(examples):
+            inputs = []
+            targets = []
+            
+            for instruction, input_text, output in zip(examples["instruction"], examples["input"], examples["output"]):
+                # Format the prompt
+                prompt = self.format_prompt(instruction, input_text)
+                inputs.append(prompt)
+                targets.append(output)
+            
+            # Tokenize inputs
+            model_inputs = self.tokenizer(
+                inputs,
+                padding="max_length",
+                truncation=True,
+                max_length=512,
+                return_tensors=None  # Return Python lists
+            )
+            
+            # Tokenize targets
+            labels = self.tokenizer(
+                targets,
+                padding="max_length",
+                truncation=True,
+                max_length=512,
+                return_tensors=None  # Return Python lists
+            )
+            
+            # Create the final labels
+            model_inputs["labels"] = labels["input_ids"]
+            
+            return model_inputs
         
-        # RTX 4090 optimized training parameters
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=num_train_epochs,
-            per_device_train_batch_size=16,  # Increased from 4 to 16 for RTX 4090
-            gradient_accumulation_steps=2,   # Reduced but still accumulating for stability
-            warmup_ratio=0.1,                # Use ratio instead of steps for better scaling
-            learning_rate=2e-4,
-            fp16=True,                       # Use fp16 for RTX 4090 compatibility
-            logging_steps=10,
-            save_strategy="epoch",
-            save_total_limit=2,
-            report_to="none",                # Disable wandb or other reporting
-            optim="adamw_torch",             # Use torch optimizer for better memory efficiency
-            max_grad_norm=0.3,               # Add gradient clipping for stability
-            weight_decay=0.01,               # Add weight decay to prevent overfitting
+        # Apply preprocessing
+        processed_dataset = dataset.map(
+            preprocess_function,
+            batched=True,
+            remove_columns=["instruction", "input", "output"]
         )
         
-        # Create Trainer
+        # Define training arguments
+        training_args = TrainingArguments(
+            output_dir="./results",
+            num_train_epochs=3,
+            per_device_train_batch_size=4,  # Adjusted for RTX 4090
+            gradient_accumulation_steps=4,  # Accumulate gradients for effective batch size of 16
+            warmup_steps=100,
+            weight_decay=0.01,
+            logging_dir="./logs",
+            logging_steps=10,
+            save_steps=200,
+            fp16=True,  # Use mixed precision for faster training
+            learning_rate=2e-5,
+            remove_unused_columns=False,
+        )
+        
+        # Create data collator that handles padding
+        data_collator = lambda data: {
+            'input_ids': torch.stack([torch.tensor(x['input_ids']) for x in data]),
+            'attention_mask': torch.stack([torch.tensor(x['attention_mask']) for x in data]),
+            'labels': torch.stack([torch.tensor(x['labels']) for x in data]),
+        }
+        
+        # Initialize trainer
         trainer = Trainer(
             model=self.model,
             args=training_args,
-            train_dataset=tokenized_dataset,
+            train_dataset=processed_dataset,
+            data_collator=data_collator,
         )
         
-        # Train the model
+        # Start training
         trainer.train()
         
-        # Save the model and tokenizer
-        self.model.save_pretrained(output_dir)
-        self.tokenizer.save_pretrained(output_dir)
-        print(f"Model saved to {output_dir}")
+        # Save the model
+        self.model.save_pretrained("./cricket_model")
+        self.tokenizer.save_pretrained("./cricket_model")
+        print("Model training complete and saved to ./cricket_model")
     
     def generate_response(self, instruction, input_text="", max_length=512):
         """Generate a response to a user query with RTX 4090 optimized settings"""
