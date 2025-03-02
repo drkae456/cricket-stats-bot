@@ -394,105 +394,199 @@ class CricketAnalysisModel:
         print(f"Indexed {len(documents)} documents")
     
     def _create_match_document(self, match_data):
-        """Create a document from match data"""
-        # Get team names from IDs
-        batting_team_id = match_data['batting_team'].iloc[0]
-        bowling_team_id = match_data['bowling_team'].iloc[0]
-        
-        batting_team = next((k for k, v in self.data['team'].items() if v == batting_team_id), f"Team {batting_team_id}")
-        bowling_team = next((k for k, v in self.data['team'].items() if v == bowling_team_id), f"Team {bowling_team_id}")
-        
-        # Get venue name from ID
-        venue_id = match_data['venue'].iloc[0]
-        venue_name = next((k for k, v in self.data['stadium'].items() if v == venue_id), f"Venue {venue_id}")
-        
+        """Create a document for a cricket match"""
+        # Get actual names from IDs
         date = match_data['date'].iloc[0]
+        venue = match_data['venue'].iloc[0]
+        batting_team = match_data['batting_team'].iloc[0]
+        bowling_team = match_data['bowling_team'].iloc[0]
         
-        # Create match summary
-        content = f"Match: {batting_team} vs {bowling_team} at {venue_name} on {date}\n\n"
+        # Get actual names from mapping files
+        venue_name = self._get_stadium_name(venue)
+        batting_team_name = self._get_team_name(batting_team)
+        bowling_team_name = self._get_team_name(bowling_team)
         
-        # Add batting statistics
-        content += "Batting Statistics:\n"
-        batters = match_data.groupby('batter')
-        for batter_id, batter_data in batters:
-            batter_name = next((k for k, v in self.data['player'].items() if v == batter_id), f"Player {batter_id}")
-            runs = batter_data['runs_batter'].sum()
-            balls = len(batter_data)
-            content += f"{batter_name}: {runs} runs from {balls} balls\n"
+        # Calculate match statistics
+        total_runs = match_data['runs_batter'].sum() + match_data['runs_extras'].sum()
+        total_wickets = match_data['wicket'].sum()  # Using 'wicket' instead of 'is_wicket'
         
-        # Add bowling statistics
-        content += "\nBowling Statistics:\n"
-        bowlers = match_data.groupby('bowler')
-        for bowler_id, bowler_data in bowlers:
-            bowler_name = next((k for k, v in self.data['player'].items() if v == bowler_id), f"Player {bowler_id}")
-            wickets = bowler_data['is_wicket'].sum()
-            runs = bowler_data['runs_batter'].sum() + bowler_data['extras'].sum()
-            overs = len(bowler_data) // 6  # Approximate overs
-            content += f"{bowler_name}: {wickets} wickets for {runs} runs in {overs} overs\n"
+        # Get top batters
+        batter_stats = match_data.groupby('batter')['runs_batter'].sum().reset_index()
+        batter_stats = batter_stats.sort_values('runs_batter', ascending=False).head(3)
+        
+        top_batters = []
+        for _, row in batter_stats.iterrows():
+            batter_name = self._get_player_name(row['batter'])
+            runs = row['runs_batter']
+            top_batters.append(f"{batter_name}: {runs} runs")
+        
+        # Get top bowlers
+        bowler_stats = match_data.groupby('bowler').agg({'wicket': 'sum'}).reset_index()
+        bowler_stats = bowler_stats.sort_values('wicket', ascending=False).head(3)
+        
+        top_bowlers = []
+        for _, row in bowler_stats.iterrows():
+            bowler_name = self._get_player_name(row['bowler'])
+            wickets = row['wicket']
+            top_bowlers.append(f"{bowler_name}: {wickets} wickets")
+        
+        # Create document content
+        content = f"Match: {batting_team_name} vs {bowling_team_name}\n"
+        content += f"Date: {date}\n"
+        content += f"Venue: {venue_name}\n"
+        content += f"Score: {total_runs} runs, {total_wickets} wickets\n"
+        
+        if top_batters:
+            content += "Top Batters:\n"
+            for batter in top_batters:
+                content += f"- {batter}\n"
+        
+        if top_bowlers:
+            content += "Top Bowlers:\n"
+            for bowler in top_bowlers:
+                content += f"- {bowler}\n"
         
         return {
-            "id": f"match_{date}_{batting_team_id}_{bowling_team_id}",
-            "type": "match",
-            "content": content
+            'id': f"match_{date}_{batting_team}_{bowling_team}",
+            'type': 'match',
+            'content': content,
+            'metadata': {
+                'date': str(date),
+                'venue': venue,
+                'batting_team': batting_team,
+                'bowling_team': bowling_team
+            }
         }
     
     def _create_player_document(self, player_name, player_id):
-        """Create a document from player data"""
-        content = f"Player: {player_name} (ID: {player_id})\n\n"
+        """Create a document for a player"""
+        if self.cricket_df is None:
+            return {
+                'id': f"player_{player_id}",
+                'type': 'player',
+                'content': f"Player: {player_name} (ID: {player_id})",
+                'metadata': {'player_id': player_id}
+            }
         
-        # Filter cricket data for this player
-        if self.cricket_df is not None:
-            # Batting stats
-            batting_data = self.cricket_df[self.cricket_df['batter'] == player_id]
-            if not batting_data.empty:
-                total_runs = batting_data['runs_batter'].sum()
-                total_balls = len(batting_data)
-                content += f"Batting Statistics:\n"
-                content += f"Total Runs: {total_runs}\n"
-                content += f"Total Balls Faced: {total_balls}\n"
-                if total_balls > 0:
-                    strike_rate = (total_runs / total_balls) * 100
-                    content += f"Strike Rate: {strike_rate:.2f}\n"
-            
-            # Bowling stats
-            bowling_data = self.cricket_df[self.cricket_df['bowler'] == player_id]
-            if not bowling_data.empty:
-                total_wickets = bowling_data['is_wicket'].sum()
-                total_runs_conceded = bowling_data['runs_batter'].sum() + bowling_data['extras'].sum()
-                content += f"\nBowling Statistics:\n"
-                content += f"Total Wickets: {total_wickets}\n"
-                content += f"Total Runs Conceded: {total_runs_conceded}\n"
+        # Get batting stats
+        batting_df = self.cricket_df[self.cricket_df['batter'] == player_id]
+        total_runs = batting_df['runs_batter'].sum()
+        innings_batted = batting_df.groupby(['date', 'innings']).size().shape[0]
+        
+        # Get bowling stats
+        bowling_df = self.cricket_df[self.cricket_df['bowler'] == player_id]
+        total_wickets = bowling_df['wicket'].sum()
+        innings_bowled = bowling_df.groupby(['date', 'innings']).size().shape[0]
+        
+        # Create document content
+        content = f"Player: {player_name}\n"
+        
+        if innings_batted > 0:
+            avg_runs = total_runs / innings_batted if innings_batted > 0 else 0
+            content += f"Batting Statistics:\n"
+            content += f"- Total Runs: {total_runs}\n"
+            content += f"- Innings Batted: {innings_batted}\n"
+            content += f"- Average: {avg_runs:.2f}\n"
+        
+        if innings_bowled > 0:
+            avg_wickets = total_wickets / innings_bowled if innings_bowled > 0 else 0
+            content += f"Bowling Statistics:\n"
+            content += f"- Total Wickets: {total_wickets}\n"
+            content += f"- Innings Bowled: {innings_bowled}\n"
+            content += f"- Average: {avg_wickets:.2f}\n"
         
         return {
-            "id": f"player_{player_id}",
-            "type": "player",
-            "content": content
+            'id': f"player_{player_id}",
+            'type': 'player',
+            'content': content,
+            'metadata': {'player_id': player_id}
         }
     
     def _create_team_document(self, team_name, team_id):
-        """Create a document from team data"""
-        content = f"Team: {team_name} (ID: {team_id})\n\n"
+        """Create a document for a team"""
+        if self.cricket_df is None:
+            return {
+                'id': f"team_{team_id}",
+                'type': 'team',
+                'content': f"Team: {team_name} (ID: {team_id})",
+                'metadata': {'team_id': team_id}
+            }
         
-        # Filter cricket data for this team
-        if self.cricket_df is not None:
-            # Matches as batting team
-            batting_matches = self.cricket_df[self.cricket_df['batting_team'] == team_id]
-            batting_match_count = len(batting_matches.groupby(['date', 'venue', 'bowling_team']))
+        # Get matches where this team was batting
+        batting_df = self.cricket_df[self.cricket_df['batting_team'] == team_id]
+        
+        # Get matches where this team was bowling
+        bowling_df = self.cricket_df[self.cricket_df['bowling_team'] == team_id]
+        
+        # Create document content
+        content = f"Team: {team_name}\n"
+        
+        # Add match statistics
+        total_matches = len(set(batting_df['date'].tolist() + bowling_df['date'].tolist()))
+        content += f"Total Matches: {total_matches}\n"
+        
+        # Get top players for this team
+        if not batting_df.empty:
+            top_batters = batting_df.groupby('batter')['runs_batter'].sum().reset_index()
+            top_batters = top_batters.sort_values('runs_batter', ascending=False).head(3)
             
-            # Matches as bowling team
-            bowling_matches = self.cricket_df[self.cricket_df['bowling_team'] == team_id]
-            bowling_match_count = len(bowling_matches.groupby(['date', 'venue', 'batting_team']))
+            if not top_batters.empty:
+                content += "Top Batters:\n"
+                for _, row in top_batters.iterrows():
+                    batter_name = self._get_player_name(row['batter'])
+                    runs = row['runs_batter']
+                    content += f"- {batter_name}: {runs} runs\n"
+        
+        if not bowling_df.empty:
+            top_bowlers = bowling_df.groupby('bowler')['wicket'].sum().reset_index()
+            top_bowlers = top_bowlers.sort_values('wicket', ascending=False).head(3)
             
-            total_matches = batting_match_count + bowling_match_count
-            content += f"Total Matches: {total_matches}\n"
-            
-            # Add more team statistics as needed
+            if not top_bowlers.empty:
+                content += "Top Bowlers:\n"
+                for _, row in top_bowlers.iterrows():
+                    bowler_name = self._get_player_name(row['bowler'])
+                    wickets = row['wicket']
+                    content += f"- {bowler_name}: {wickets} wickets\n"
         
         return {
-            "id": f"team_{team_id}",
-            "type": "team",
-            "content": content
+            'id': f"team_{team_id}",
+            'type': 'team',
+            'content': content,
+            'metadata': {'team_id': team_id}
         }
+    
+    def _get_player_name(self, player_id):
+        """Get player name from ID"""
+        if 'player' not in self.data:
+            return f"Player {player_id}"
+        
+        for name, pid in self.data['player'].items():
+            if pid == player_id:
+                return name
+        
+        return f"Player {player_id}"
+    
+    def _get_team_name(self, team_id):
+        """Get team name from ID"""
+        if 'team' not in self.data:
+            return f"Team {team_id}"
+        
+        for name, tid in self.data['team'].items():
+            if tid == team_id:
+                return name
+        
+        return f"Team {team_id}"
+    
+    def _get_stadium_name(self, stadium_id):
+        """Get stadium name from ID"""
+        if 'stadium' not in self.data:
+            return f"Stadium {stadium_id}"
+        
+        for name, sid in self.data['stadium'].items():
+            if sid == stadium_id:
+                return name
+        
+        return f"Stadium {stadium_id}"
     
     def retrieve_relevant_documents(self, query, top_k=3):
         """Retrieve relevant documents for a query"""
