@@ -83,16 +83,18 @@ class CricketAnalysisModel:
         
         # Load any additional data files needed for training
         if os.path.exists(os.path.join(self.data_dir, 'additional_training_data.json')):
-            additional_data = json.load(open(os.path.join(self.data_dir, 'additional_training_data.json')))
-            training_data.extend(additional_data)
+            with open(os.path.join(self.data_dir, 'additional_training_data.json'), 'r') as f:
+                additional_data = json.load(f)
+                training_data.extend(additional_data)
         
         # Generate examples from cricket data
         cricket_examples = self._generate_cricket_data_examples()
         training_data.extend(cricket_examples)
         
-        # Generate synthetic examples
-        synthetic_examples = self._generate_synthetic_examples()
-        training_data.extend(synthetic_examples)
+        # Remove the call to _generate_synthetic_examples since it doesn't exist
+        # Or implement a basic version:
+        # synthetic_examples = self._generate_synthetic_examples()
+        # training_data.extend(synthetic_examples)
         
         print(f"Total training examples: {len(training_data)}")
         return training_data
@@ -310,6 +312,33 @@ class CricketAnalysisModel:
             
             response = self.generate_response(instruction)
             print(f"\nAssistant: {response}")
+
+    # You can add this method if you want to generate synthetic examples
+    def _generate_synthetic_examples(self):
+        """Generate synthetic examples for training"""
+        print("Generating synthetic examples...")
+        
+        # This is a placeholder implementation
+        # You can customize this to generate whatever synthetic examples you need
+        examples = []
+        
+        # Example: Generate simple questions about cricket rules
+        examples.append({
+            "instruction": "How many players are in a cricket team?",
+            "input": "",
+            "output": "A cricket team consists of 11 players on the field."
+        })
+        
+        examples.append({
+            "instruction": "What is LBW in cricket?",
+            "input": "",
+            "output": "LBW stands for 'Leg Before Wicket'. It's a way a batter can be dismissed when the ball hits their body (usually the leg) when it would otherwise have hit the wicket."
+        })
+        
+        # Add more synthetic examples as needed
+        
+        print(f"Generated {len(examples)} synthetic examples")
+        return examples
 
 def main():
     # Initialize the model
