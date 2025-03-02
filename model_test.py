@@ -70,15 +70,20 @@ class CricketAnalysisModel:
         print(f"Loaded {len(self.data)} mapping files")
         
     def prepare_training_data(self):
-        """Create training examples from the loaded data"""
-        print("Preparing training data...")
+        """Create training examples from the loaded data using a tiny subset for testing"""
+        print("Preparing training data (tiny subset for testing)...")
         training_examples = []
         
-        # Create examples for each data type
-        for data_type, mapping in self.data.items():
+        # Create examples for each data type - limit to just 2 mappings
+        selected_mappings = list(self.data.keys())[:2]  # Only use first 2 mapping types
+        for data_type in selected_mappings:
+            mapping = self.data[data_type]
+            # Take only 5 items from each mapping
+            sample_mapping = dict(list(mapping.items())[:5])
+            
             # Create general information about the data
             overview = f"Here's information about cricket {data_type}:\n"
-            for key, value in list(mapping.items())[:10]:  # Keep sample for overview to avoid too long outputs
+            for key, value in sample_mapping.items():
                 overview += f"- {key}: ID {value}\n"
             overview += f"There are {len(mapping)} {data_type} entries in total."
             
@@ -88,8 +93,8 @@ class CricketAnalysisModel:
                 "output": overview
             })
             
-            # Create examples for specific lookups - use all items instead of just 50
-            for key, value in mapping.items():
+            # Create examples for specific lookups - use only the sample items
+            for key, value in sample_mapping.items():
                 training_examples.append({
                     "instruction": f"What is the ID for {key} in {data_type}?",
                     "input": "",
@@ -102,11 +107,12 @@ class CricketAnalysisModel:
                     "output": f"ID {value} in {data_type} corresponds to {key}."
                 })
         
-        # Add cricket statistics examples if cricket_df is loaded
+        # Add cricket statistics examples if cricket_df is loaded - limit to 10 examples
         if self.cricket_df is not None:
-            training_examples.extend(self._generate_cricket_data_examples())
+            cricket_examples = self._generate_cricket_data_examples()
+            training_examples.extend(cricket_examples[:10])  # Only use first 10 examples
         
-        # Add examples for cricket rules and terminology
+        # Add just 3 examples for cricket rules and terminology
         cricket_rules = [
             {
                 "instruction": "Explain the LBW rule in cricket.",
@@ -122,29 +128,23 @@ class CricketAnalysisModel:
                 "instruction": "Explain what a duck means in cricket.",
                 "input": "",
                 "output": "In cricket, a 'duck' refers to when a batter is dismissed without scoring any runs (zero). The term comes from the shape of the number '0' resembling a duck's egg. A 'golden duck' specifically means the batter was dismissed on the first ball they faced."
-            },
-            {
-                "instruction": "What is the difference between Test cricket and ODI?",
-                "input": "",
-                "output": "Test cricket and One Day Internationals (ODIs) differ in several ways. Test matches last up to 5 days with unlimited overs and players wear white clothing. ODIs are limited to 50 overs per team and are completed in a single day, with players wearing colored uniforms. Test cricket is considered the traditional format that tests players' endurance and technique, while ODIs are more fast-paced with an emphasis on scoring quickly."
-            },
-            {
-                "instruction": "What is a hat-trick in cricket?",
-                "input": "",
-                "output": "A hat-trick in cricket occurs when a bowler dismisses three batters with consecutive deliveries. This is a rare and celebrated achievement. The term originated in cricket but has since been adopted by other sports. In international cricket, hat-tricks are relatively uncommon and are considered a significant milestone in a bowler's career."
             }
         ]
         training_examples.extend(cricket_rules)
         
-        print(f"Created {len(training_examples)} training examples")
+        print(f"Created {len(training_examples)} training examples (tiny subset)")
         return training_examples
     
     def _generate_cricket_data_examples(self):
         """Generate examples from the cricket data CSV"""
         examples = []
         
+        # Convert player IDs to names
+        player_mapping = json.load(open('player_mapping.json'))
+        player_id_to_name = {v: k for k, v in player_mapping.items()}
+        self.cricket_df['batter_name'] = self.cricket_df['batter'].map(player_id_to_name)
+        
         # Create reverse mappings for easier lookup
-        player_id_to_name = {v: k for k, v in self.data.get('player', {}).items()}
         team_id_to_name = {v: k for k, v in self.data.get('team', {}).items()}
         stadium_id_to_name = {v: k for k, v in self.data.get('stadium', {}).items()}
         
@@ -275,6 +275,17 @@ class CricketAnalysisModel:
                             "output": f"{batter_name}'s average {readable_col} is {col_avg:.2f}."
                         })
         
+        # Create player summary statistics
+        player_stats = {}
+        for player_id, player_name in player_id_to_name.items():
+            player_data = self.cricket_df[self.cricket_df['batter'] == player_id]
+            player_stats[player_name] = {
+                'total_runs': player_data['runs_batter'].sum(),
+                'matches': player_data['date'].nunique(),
+                'venues': player_data['venue'].nunique(),
+                # Add more statistics as needed
+            }
+        
         return examples
     
     def initialize_model(self):
@@ -337,46 +348,64 @@ class CricketAnalysisModel:
         
         return tokenized
     
-    def train(self, training_examples, output_dir="./cricket_model", epochs=3, batch_size=8):
-        """Train the model on the provided examples"""
-        print(f"Preparing to train with {len(training_examples)} examples...")
+    def train(self, output_dir="cricket_model", num_train_epochs=1, per_device_train_batch_size=4):
+        """Train the model with a tiny subset of data and minimal training"""
+        print("Starting training with minimal parameters for testing...")
         
-        # Create dataset
-        train_dataset = Dataset.from_list(training_examples)
-        train_dataset = train_dataset.map(
-            self.preprocess_data,
-            batched=True,
-            remove_columns=["instruction", "input", "output"]
-        )
+        # Prepare training data
+        training_data = self.prepare_training_data()
+        train_dataset = Dataset.from_list(training_data)
         
-        # Set up training arguments
+        # Tokenize the dataset
+        def tokenize_function(examples):
+            prompt = self.format_prompt(examples["instruction"], examples["input"], examples["output"])
+            target = examples["output"]
+            
+            tokenized_prompt = self.tokenizer(prompt, truncation=True, max_length=512)
+            tokenized_target = self.tokenizer(target, truncation=True, max_length=512)
+            
+            # Combine prompt and target for training
+            input_ids = tokenized_prompt["input_ids"] + tokenized_target["input_ids"][1:]  # Skip the BOS token
+            attention_mask = tokenized_prompt["attention_mask"] + tokenized_target["attention_mask"][1:]
+            
+            # Create labels - set prompt tokens to -100 to ignore them in loss calculation
+            labels = [-100] * len(tokenized_prompt["input_ids"]) + tokenized_target["input_ids"][1:]
+            
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels
+            }
+        
+        tokenized_dataset = train_dataset.map(tokenize_function, remove_columns=["instruction", "input", "output"])
+        
+        # Set up training arguments - minimal settings for testing
         training_args = TrainingArguments(
             output_dir=output_dir,
-            num_train_epochs=epochs,
-            per_device_train_batch_size=batch_size,
+            num_train_epochs=num_train_epochs,
+            per_device_train_batch_size=per_device_train_batch_size,
             gradient_accumulation_steps=1,
-            warmup_steps=100,
-            weight_decay=0.01,
-            logging_steps=10,
-            save_strategy="epoch",
-            learning_rate=2e-4,
-            bf16=True,  # Use BF16 for H100
-            tf32=True,  # Enable TF32 for faster matrix multiplications
-            remove_unused_columns=False,
-            optim="adamw_torch_fused"
+            warmup_steps=10,
+            max_steps=20,  # Limit to just 20 steps for quick testing
+            learning_rate=1e-4,
+            fp16=True,
+            logging_steps=1,  # Log every step
+            save_steps=10,  # Save only twice during training
+            save_total_limit=2,  # Keep only 2 checkpoints
+            report_to="none",  # Disable wandb or other reporting
         )
         
         # Create Trainer
         trainer = Trainer(
             model=self.model,
             args=training_args,
-            train_dataset=train_dataset,
+            train_dataset=tokenized_dataset,
         )
         
-        print("Starting training...")
+        # Train the model
         trainer.train()
         
-        # Save the model
+        # Save the model and tokenizer
         self.model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         print(f"Model saved to {output_dir}")
@@ -431,7 +460,7 @@ def main():
     cricket_model.initialize_model()
     
     # Train the model
-    cricket_model.train(training_examples)
+    cricket_model.train()
     
     # Start interactive mode
     cricket_model.interactive_mode()
