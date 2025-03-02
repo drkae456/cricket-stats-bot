@@ -101,10 +101,10 @@ class CricketAnalysisModel:
         """Generate examples from cricket data"""
         print("Generating cricket data examples...")
         
-        # Update all file paths to use the data_dir
+        # Update the file path to use stadium_mapping.json instead of ground_mapping.json
         player_mapping = json.load(open(os.path.join(self.data_dir, 'player_mapping.json')))
         team_mapping = json.load(open(os.path.join(self.data_dir, 'team_mapping.json')))
-        ground_mapping = json.load(open(os.path.join(self.data_dir, 'ground_mapping.json')))
+        stadium_mapping = json.load(open(os.path.join(self.data_dir, 'stadium_mapping.json')))
         
         # Update any other data file paths
         batting_data = pd.read_csv(os.path.join(self.data_dir, 'batting_data.csv'))
