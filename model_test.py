@@ -8,6 +8,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from tqdm import tqdm
+from mappings import cricket_mappings
 
 class CricketAnalysisModel:
     def __init__(self, model_name="microsoft/phi-2"):
@@ -447,3 +448,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Get a player ID
+player_id = cricket_mappings.get_player_id("Virat Kohli")
+
+# Get a team name
+team_name = cricket_mappings.get_team_name(24)  # India
+
+# Look up a stadium
+stadium_name = cricket_mappings.get_stadium_name(5)  # Melbourne Cricket Ground
