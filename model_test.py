@@ -10,24 +10,25 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from tqdm import tqdm
 
 class CricketAnalysisModel:
-    def __init__(self, model_name="microsoft/phi-2", lora_r=16, lora_alpha=32, lora_dropout=0.05):
+    def __init__(self, model_name="microsoft/phi-2"):
         self.model_name = model_name
-        self.lora_config = LoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        )
-        self.tokenizer = None
         self.model = None
+        self.tokenizer = None
         self.data = {}
         self.cricket_df = None
         
-        # Define the base directory for data files
+        # Fix the data directory path to point to the correct location
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.data_dir = os.path.join(os.path.dirname(self.script_dir), 'cleaned_data')
+        self.data_dir = os.path.join(self.script_dir, 'cleaned_data')
+        
+        # Define LoRA config
+        self.lora_config = LoraConfig(
+            r=32,
+            lora_alpha=64,
+            lora_dropout=0.1,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
         
     def extract_zip_data(self, zip_path="cleaned_data.zip", extract_to="./"):
         """Extract the zip file containing the data"""
