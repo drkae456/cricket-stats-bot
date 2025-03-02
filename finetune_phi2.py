@@ -78,7 +78,7 @@ class CricketAnalysisModel:
         for data_type, mapping in self.data.items():
             # Create general information about the data
             overview = f"Here's information about cricket {data_type}:\n"
-            for key, value in list(mapping.items())[:10]:  # Sample first 10 items
+            for key, value in list(mapping.items())[:10]:  # Keep sample for overview to avoid too long outputs
                 overview += f"- {key}: ID {value}\n"
             overview += f"There are {len(mapping)} {data_type} entries in total."
             
@@ -88,8 +88,8 @@ class CricketAnalysisModel:
                 "output": overview
             })
             
-            # Create examples for specific lookups
-            for key, value in list(mapping.items())[:50]:  # Sample items for training
+            # Create examples for specific lookups - use all items instead of just 50
+            for key, value in mapping.items():
                 training_examples.append({
                     "instruction": f"What is the ID for {key} in {data_type}?",
                     "input": "",
@@ -148,10 +148,10 @@ class CricketAnalysisModel:
         team_id_to_name = {v: k for k, v in self.data.get('team', {}).items()}
         stadium_id_to_name = {v: k for k, v in self.data.get('stadium', {}).items()}
         
-        # Add examples for player batting statistics
+        # Add examples for player batting statistics - use all batters instead of just 20
         if 'batter' in self.cricket_df.columns and 'runs_batter' in self.cricket_df.columns:
-            sample_batters = self.cricket_df['batter'].unique()[:20]  # Sample 20 batters
-            for batter_id in sample_batters:
+            all_batters = self.cricket_df['batter'].unique()
+            for batter_id in all_batters:
                 if batter_id in player_id_to_name:
                     batter_name = player_id_to_name[batter_id]
                     batter_data = self.cricket_df[self.cricket_df['batter'] == batter_id]
@@ -177,10 +177,10 @@ class CricketAnalysisModel:
                             "output": f"{batter_name}'s strike rate is {strike_rate:.2f} (scored {total_runs} runs from {total_balls} balls)."
                         })
         
-        # Add examples for team performance
+        # Add examples for team performance - use all teams instead of just 10
         if 'batting_team' in self.cricket_df.columns and 'bowling_team' in self.cricket_df.columns:
-            sample_teams = self.cricket_df['batting_team'].unique()[:10]  # Sample 10 teams
-            for team_id in sample_teams:
+            all_teams = self.cricket_df['batting_team'].unique()
+            for team_id in all_teams:
                 if team_id in team_id_to_name:
                     team_name = team_id_to_name[team_id]
                     team_batting = self.cricket_df[self.cricket_df['batting_team'] == team_id]
@@ -195,6 +195,85 @@ class CricketAnalysisModel:
                         "input": "",
                         "output": f"Based on the available data, {team_name} has batted in {matches_batted} matches and bowled in {matches_bowled} matches."
                     })
+                    
+                    # Add team runs information
+                    total_runs = team_batting['runs_batter'].sum() if 'runs_batter' in self.cricket_df.columns else 'unknown'
+                    examples.append({
+                        "instruction": f"How many total runs has {team_name} scored?",
+                        "input": "",
+                        "output": f"{team_name} has scored a total of {total_runs} runs in the available data."
+                    })
+                    
+                    # Add team wickets information if available
+                    if 'wicket' in self.cricket_df.columns:
+                        wickets_taken = team_bowling[team_bowling['wicket'] == 1].shape[0]
+                        examples.append({
+                            "instruction": f"How many wickets has {team_name} taken?",
+                            "input": "",
+                            "output": f"{team_name} has taken {wickets_taken} wickets according to the available data."
+                        })
+        
+        # Add examples for stadium statistics - use all stadiums instead of just 10
+        if 'stadium' in self.cricket_df.columns:
+            all_stadiums = self.cricket_df['stadium'].unique()
+            for stadium_id in all_stadiums:
+                if stadium_id in stadium_id_to_name:
+                    stadium_name = stadium_id_to_name[stadium_id]
+                    stadium_data = self.cricket_df[self.cricket_df['stadium'] == stadium_id]
+                    
+                    # Calculate stadium stats
+                    matches = len(stadium_data['match_id'].unique()) if 'match_id' in self.cricket_df.columns else 'multiple'
+                    
+                    examples.append({
+                        "instruction": f"How many matches have been played at {stadium_name}?",
+                        "input": "",
+                        "output": f"According to the available data, {matches} matches have been played at {stadium_name}."
+                    })
+                    
+                    # Add average score information if available
+                    if 'runs_batter' in self.cricket_df.columns and 'innings' in self.cricket_df.columns:
+                        innings_data = stadium_data.groupby('innings')['runs_batter'].sum()
+                        if not innings_data.empty:
+                            avg_score = innings_data.mean()
+                            examples.append({
+                                "instruction": f"What is the average score at {stadium_name}?",
+                                "input": "",
+                                "output": f"The average score per innings at {stadium_name} is {avg_score:.2f} runs based on the available data."
+                            })
+        
+        # Generate examples for all available columns in the dataset
+        # First, identify numerical columns that might contain statistics
+        numerical_cols = self.cricket_df.select_dtypes(include=['number']).columns
+        
+        # For each player, generate examples about their statistics in each numerical column
+        for batter_id in self.cricket_df['batter'].unique():
+            if batter_id in player_id_to_name:
+                batter_name = player_id_to_name[batter_id]
+                batter_data = self.cricket_df[self.cricket_df['batter'] == batter_id]
+                
+                for col in numerical_cols:
+                    if col in ['batter', 'bowler', 'match_id', 'innings', 'batting_team', 'bowling_team', 'stadium']:
+                        continue  # Skip ID columns
+                    
+                    # Only create examples for columns that have meaningful data for this player
+                    if batter_data[col].sum() > 0:
+                        col_total = batter_data[col].sum()
+                        col_avg = batter_data[col].mean()
+                        
+                        # Format column name for readability
+                        readable_col = col.replace('_', ' ')
+                        
+                        examples.append({
+                            "instruction": f"What is {batter_name}'s total {readable_col}?",
+                            "input": "",
+                            "output": f"{batter_name}'s total {readable_col} is {col_total}."
+                        })
+                        
+                        examples.append({
+                            "instruction": f"What is {batter_name}'s average {readable_col}?",
+                            "input": "",
+                            "output": f"{batter_name}'s average {readable_col} is {col_avg:.2f}."
+                        })
         
         return examples
     
