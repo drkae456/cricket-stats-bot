@@ -9,6 +9,8 @@ from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from tqdm import tqdm
 from mappings import cricket_mappings
+from sentence_transformers import SentenceTransformer
+import faiss
 
 class CricketAnalysisModel:
     def __init__(self, model_name="microsoft/phi-2"):
@@ -30,6 +32,10 @@ class CricketAnalysisModel:
             bias="none",
             task_type="CAUSAL_LM",
         )
+        
+        # Add vector database for document retrieval
+        self.vector_db = None
+        self.embeddings_model = None
         
     def extract_zip_data(self, zip_path="cleaned_data.zip", extract_to="./"):
         """Extract the zip file containing the data"""
@@ -332,15 +338,211 @@ class CricketAnalysisModel:
         response = response.split("<|assistant|>")[-1].strip()
         return response
     
-    def interactive_mode(self):
+    def setup_retrieval_system(self, embeddings_model="sentence-transformers/all-mpnet-base-v2"):
+        """Set up the retrieval system with document embeddings"""
+        print(f"Setting up retrieval system with {embeddings_model}...")
+        
+        # Initialize the embeddings model
+        self.embeddings_model = SentenceTransformer(embeddings_model)
+        
+        # Create document store from cricket data
+        self.index_documents()
+        
+        print("Retrieval system setup complete")
+    
+    def index_documents(self):
+        """Index documents from cricket data for retrieval"""
+        print("Indexing cricket documents...")
+        
+        documents = []
+        document_embeddings = []
+        
+        # Create documents from cricket data
+        if self.cricket_df is not None:
+            # Create match summaries
+            for _, match_group in self.cricket_df.groupby(['date', 'venue', 'batting_team', 'bowling_team']):
+                # Create a document for this match
+                match_doc = self._create_match_document(match_group)
+                documents.append(match_doc)
+        
+        # Create documents from player profiles
+        if 'player' in self.data:
+            for player_name, player_id in self.data['player'].items():
+                player_doc = self._create_player_document(player_name, player_id)
+                documents.append(player_doc)
+        
+        # Create documents from team information
+        if 'team' in self.data:
+            for team_name, team_id in self.data['team'].items():
+                team_doc = self._create_team_document(team_name, team_id)
+                documents.append(team_doc)
+        
+        # Create embeddings for all documents
+        print(f"Creating embeddings for {len(documents)} documents...")
+        for doc in tqdm(documents):
+            embedding = self.embeddings_model.encode(doc['content'])
+            document_embeddings.append(embedding)
+        
+        # Create FAISS index
+        dimension = len(document_embeddings[0])
+        self.vector_db = faiss.IndexFlatL2(dimension)
+        self.vector_db.add(np.array(document_embeddings))
+        
+        # Store documents for retrieval
+        self.documents = documents
+        
+        print(f"Indexed {len(documents)} documents")
+    
+    def _create_match_document(self, match_data):
+        """Create a document from match data"""
+        # Get team names from IDs
+        batting_team_id = match_data['batting_team'].iloc[0]
+        bowling_team_id = match_data['bowling_team'].iloc[0]
+        
+        batting_team = next((k for k, v in self.data['team'].items() if v == batting_team_id), f"Team {batting_team_id}")
+        bowling_team = next((k for k, v in self.data['team'].items() if v == bowling_team_id), f"Team {bowling_team_id}")
+        
+        # Get venue name from ID
+        venue_id = match_data['venue'].iloc[0]
+        venue_name = next((k for k, v in self.data['stadium'].items() if v == venue_id), f"Venue {venue_id}")
+        
+        date = match_data['date'].iloc[0]
+        
+        # Create match summary
+        content = f"Match: {batting_team} vs {bowling_team} at {venue_name} on {date}\n\n"
+        
+        # Add batting statistics
+        content += "Batting Statistics:\n"
+        batters = match_data.groupby('batter')
+        for batter_id, batter_data in batters:
+            batter_name = next((k for k, v in self.data['player'].items() if v == batter_id), f"Player {batter_id}")
+            runs = batter_data['runs_batter'].sum()
+            balls = len(batter_data)
+            content += f"{batter_name}: {runs} runs from {balls} balls\n"
+        
+        # Add bowling statistics
+        content += "\nBowling Statistics:\n"
+        bowlers = match_data.groupby('bowler')
+        for bowler_id, bowler_data in bowlers:
+            bowler_name = next((k for k, v in self.data['player'].items() if v == bowler_id), f"Player {bowler_id}")
+            wickets = bowler_data['is_wicket'].sum()
+            runs = bowler_data['runs_batter'].sum() + bowler_data['extras'].sum()
+            overs = len(bowler_data) // 6  # Approximate overs
+            content += f"{bowler_name}: {wickets} wickets for {runs} runs in {overs} overs\n"
+        
+        return {
+            "id": f"match_{date}_{batting_team_id}_{bowling_team_id}",
+            "type": "match",
+            "content": content
+        }
+    
+    def _create_player_document(self, player_name, player_id):
+        """Create a document from player data"""
+        content = f"Player: {player_name} (ID: {player_id})\n\n"
+        
+        # Filter cricket data for this player
+        if self.cricket_df is not None:
+            # Batting stats
+            batting_data = self.cricket_df[self.cricket_df['batter'] == player_id]
+            if not batting_data.empty:
+                total_runs = batting_data['runs_batter'].sum()
+                total_balls = len(batting_data)
+                content += f"Batting Statistics:\n"
+                content += f"Total Runs: {total_runs}\n"
+                content += f"Total Balls Faced: {total_balls}\n"
+                if total_balls > 0:
+                    strike_rate = (total_runs / total_balls) * 100
+                    content += f"Strike Rate: {strike_rate:.2f}\n"
+            
+            # Bowling stats
+            bowling_data = self.cricket_df[self.cricket_df['bowler'] == player_id]
+            if not bowling_data.empty:
+                total_wickets = bowling_data['is_wicket'].sum()
+                total_runs_conceded = bowling_data['runs_batter'].sum() + bowling_data['extras'].sum()
+                content += f"\nBowling Statistics:\n"
+                content += f"Total Wickets: {total_wickets}\n"
+                content += f"Total Runs Conceded: {total_runs_conceded}\n"
+        
+        return {
+            "id": f"player_{player_id}",
+            "type": "player",
+            "content": content
+        }
+    
+    def _create_team_document(self, team_name, team_id):
+        """Create a document from team data"""
+        content = f"Team: {team_name} (ID: {team_id})\n\n"
+        
+        # Filter cricket data for this team
+        if self.cricket_df is not None:
+            # Matches as batting team
+            batting_matches = self.cricket_df[self.cricket_df['batting_team'] == team_id]
+            batting_match_count = len(batting_matches.groupby(['date', 'venue', 'bowling_team']))
+            
+            # Matches as bowling team
+            bowling_matches = self.cricket_df[self.cricket_df['bowling_team'] == team_id]
+            bowling_match_count = len(bowling_matches.groupby(['date', 'venue', 'batting_team']))
+            
+            total_matches = batting_match_count + bowling_match_count
+            content += f"Total Matches: {total_matches}\n"
+            
+            # Add more team statistics as needed
+        
+        return {
+            "id": f"team_{team_id}",
+            "type": "team",
+            "content": content
+        }
+    
+    def retrieve_relevant_documents(self, query, top_k=3):
+        """Retrieve relevant documents for a query"""
+        if self.vector_db is None or self.embeddings_model is None:
+            print("Retrieval system not set up. Call setup_retrieval_system() first.")
+            return []
+        
+        # Encode the query
+        query_embedding = self.embeddings_model.encode(query)
+        query_embedding = np.array([query_embedding])
+        
+        # Search for similar documents
+        distances, indices = self.vector_db.search(query_embedding, top_k)
+        
+        # Get the documents
+        retrieved_docs = [self.documents[idx] for idx in indices[0]]
+        
+        return retrieved_docs
+    
+    def generate_response_with_retrieval(self, instruction, input_text="", max_length=512):
+        """Generate a response using retrieval augmentation"""
+        # Retrieve relevant documents
+        retrieved_docs = self.retrieve_relevant_documents(instruction + " " + input_text)
+        
+        # Create context from retrieved documents
+        context = "I'll answer based on the following information:\n\n"
+        for doc in retrieved_docs:
+            context += doc['content'] + "\n\n"
+        
+        # Combine context with the original query
+        augmented_input = context + "\nNow, answering the original question: " + input_text
+        
+        # Generate response with the augmented input
+        return self.generate_response(instruction, augmented_input, max_length)
+    
+    def interactive_mode(self, use_retrieval=True):
         """Run an interactive session with the model"""
         print("Starting interactive mode. Type 'exit' to quit.")
+        print(f"Retrieval augmentation: {'Enabled' if use_retrieval else 'Disabled'}")
+        
         while True:
             instruction = input("\nUser: ")
             if instruction.lower() == 'exit':
                 break
             
-            response = self.generate_response(instruction)
+            if use_retrieval:
+                response = self.generate_response_with_retrieval(instruction)
+            else:
+                response = self.generate_response(instruction)
+                
             print(f"\nAssistant: {response}")
 
     # You can add this method if you want to generate synthetic examples
@@ -446,17 +648,17 @@ def main():
     # Load data
     cricket_model.load_data()
     
-    # Prepare training data
-    training_examples = cricket_model.prepare_training_data()
+    # Set up retrieval system
+    cricket_model.setup_retrieval_system()
     
     # Initialize model
     cricket_model.initialize_model()
     
-    # Train the model
-    cricket_model.train()
+    # Train the model (optional - you can skip this if you just want to use retrieval)
+    # cricket_model.train()
     
-    # Start interactive mode
-    cricket_model.interactive_mode()
+    # Start interactive mode with retrieval
+    cricket_model.interactive_mode(use_retrieval=True)
 
 if __name__ == "__main__":
     main()
