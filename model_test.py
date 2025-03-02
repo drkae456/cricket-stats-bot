@@ -108,47 +108,46 @@ class CricketAnalysisModel:
         team_mapping = json.load(open(os.path.join(self.data_dir, 'team_mapping.json')))
         stadium_mapping = json.load(open(os.path.join(self.data_dir, 'stadium_mapping.json')))
         
-        # Load the cleaned cricket data instead of separate batting/bowling files
+        # Load the cleaned cricket data
         cricket_data = pd.read_csv(os.path.join(self.data_dir, 'cleaned_cricket_data.csv'))
         print(f"Loaded cricket data with {len(cricket_data)} rows")
         
-        # Process the data to generate examples
         examples = []
         
         # Group data by match (date, venue, teams)
         match_groups = cricket_data.groupby(['date', 'venue', 'batting_team', 'bowling_team'])
         
         for (date, venue, batting_team_id, bowling_team_id), match_data in match_groups:
-            # Get team names from IDs
-            batting_team = next((k for k, v in team_mapping.items() if v == batting_team_id), f"Team {batting_team_id}")
-            bowling_team = next((k for k, v in team_mapping.items() if v == bowling_team_id), f"Team {bowling_team_id}")
-            
-            # Get venue name from ID
-            venue_name = next((k for k, v in stadium_mapping.items() if v == venue), f"Venue {venue}")
-            
-            # Create match summary
-            match_summary = f"{batting_team} vs {bowling_team} at {venue_name} on {date}"
-            
-            # Generate examples for this match
-            # (You'll need to customize this based on what kind of examples you want to generate)
-            
-            # Example: Generate questions about top scorers
-            batters_runs = match_data.groupby('batter')['runs_batter'].sum().reset_index()
-            if not batters_runs.empty:
-                top_batter_id = batters_runs.loc[batters_runs['runs_batter'].idxmax(), 'batter']
-                top_batter = next((k for k, v in player_mapping.items() if v == top_batter_id), f"Player {top_batter_id}")
-                top_runs = batters_runs.loc[batters_runs['runs_batter'].idxmax(), 'runs_batter']
+            try:
+                # Get team names from IDs
+                batting_team = next((k for k, v in team_mapping.items() if v == batting_team_id), f"Team {batting_team_id}")
+                bowling_team = next((k for k, v in team_mapping.items() if v == bowling_team_id), f"Team {bowling_team_id}")
                 
-                question = f"Who was the top scorer in the match between {batting_team} and {bowling_team} on {date}?"
-                answer = f"The top scorer was {top_batter} with {top_runs} runs."
+                # Get venue name from ID
+                venue_name = next((k for k, v in stadium_mapping.items() if v == venue), f"Venue {venue}")
                 
-                examples.append({
-                    "instruction": question,
-                    "input": match_summary,
-                    "output": answer
-                })
-            
-            # Add more example types as needed
+                # Create match summary
+                match_summary = f"{batting_team} vs {bowling_team} at {venue_name} on {date}"
+                
+                # Generate examples for this match
+                batters_runs = match_data.groupby('batter')['runs_batter'].sum().reset_index()
+                if not batters_runs.empty:
+                    top_batter_id = batters_runs.loc[batters_runs['runs_batter'].idxmax(), 'batter']
+                    top_batter = next((k for k, v in player_mapping.items() if v == top_batter_id), f"Player {top_batter_id}")
+                    top_runs = batters_runs.loc[batters_runs['runs_batter'].idxmax(), 'runs_batter']
+                    
+                    question = f"Who was the top scorer in the match between {batting_team} and {bowling_team} on {date}?"
+                    answer = f"The top scorer was {top_batter} with {top_runs} runs."
+                    
+                    examples.append({
+                        "instruction": question,
+                        "input": match_summary,
+                        "output": answer
+                    })
+            except Exception as e:
+                # Skip this match if there's an error
+                print(f"Error processing match on {date}: {e}")
+                continue
         
         print(f"Generated {len(examples)} examples from cricket data")
         return examples
@@ -339,6 +338,71 @@ class CricketAnalysisModel:
         
         print(f"Generated {len(examples)} synthetic examples")
         return examples
+
+    def prepare_dataset(self, training_data):
+        """Prepare dataset for training"""
+        print("Preparing dataset...")
+        
+        # Ensure all examples have the same structure
+        cleaned_data = []
+        for item in training_data:
+            if "instruction" in item and "input" in item and "output" in item:
+                cleaned_data.append(item)
+        
+        # Create dataset
+        dataset = Dataset.from_list(cleaned_data)
+        
+        # Tokenize dataset
+        def tokenize_function(examples):
+            # Format the prompt consistently
+            prompts = []
+            for instruction, input_text, output in zip(examples["instruction"], examples["input"], examples["output"]):
+                if input_text:
+                    prompt = f"Instruction: {instruction}\nInput: {input_text}\nOutput: "
+                else:
+                    prompt = f"Instruction: {instruction}\nOutput: "
+                prompts.append(prompt)
+            
+            # Tokenize inputs
+            tokenized_inputs = self.tokenizer(
+                prompts,
+                padding="max_length",
+                truncation=True,
+                max_length=512,  # Adjust this based on your model's context window
+                return_tensors="pt"
+            )
+            
+            # Tokenize outputs (labels)
+            tokenized_outputs = self.tokenizer(
+                examples["output"],
+                padding="max_length",
+                truncation=True,
+                max_length=512,  # Adjust this based on your model's context window
+                return_tensors="pt"
+            )
+            
+            # Create labels with -100 for non-output tokens
+            labels = tokenized_inputs["input_ids"].clone()
+            for i in range(len(labels)):
+                # Find the position where the output starts
+                output_start = len(self.tokenizer.encode(prompts[i], add_special_tokens=False))
+                # Set non-output tokens to -100
+                labels[i, :output_start] = -100
+            
+            return {
+                "input_ids": tokenized_inputs["input_ids"],
+                "attention_mask": tokenized_inputs["attention_mask"],
+                "labels": labels
+            }
+        
+        # Apply tokenization
+        tokenized_dataset = dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=["instruction", "input", "output"]
+        )
+        
+        return tokenized_dataset
 
 def main():
     # Initialize the model
