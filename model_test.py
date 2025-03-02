@@ -25,6 +25,10 @@ class CricketAnalysisModel:
         self.data = {}
         self.cricket_df = None
         
+        # Define the base directory for data files
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.data_dir = os.path.join(os.path.dirname(self.script_dir), 'cleaned_data')
+        
     def extract_zip_data(self, zip_path="cleaned_data.zip", extract_to="./"):
         """Extract the zip file containing the data"""
         print(f"Extracting data from {zip_path}...")
@@ -32,7 +36,7 @@ class CricketAnalysisModel:
             zip_ref.extractall(extract_to)
         print("Data extraction complete")
         
-    def load_data(self, data_dir="cleaned_data"):
+    def load_data(self):
         """Load all JSON mapping files and CSV data from the data directory"""
         print("Loading data...")
         
@@ -45,7 +49,7 @@ class CricketAnalysisModel:
         # Load JSON mapping files
         for mapping_type in valid_mappings:
             filename = f"{mapping_type}_mapping.json"
-            file_path = os.path.join(data_dir, filename)
+            file_path = os.path.join(self.data_dir, filename)
             if os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     self.data[mapping_type] = json.load(f)
@@ -54,13 +58,13 @@ class CricketAnalysisModel:
                 print(f"Warning: Could not find {filename}")
         
         # Load cricket CSV data
-        csv_path = os.path.join(data_dir, "cleaned_cricket_data.csv")
+        csv_path = os.path.join(self.data_dir, "cleaned_cricket_data.csv")
         if os.path.exists(csv_path):
             self.cricket_df = pd.read_csv(csv_path)
             print(f"Loaded cricket data with {len(self.cricket_df)} rows")
         else:
             # Check if it's in a nested directory
-            nested_csv_path = os.path.join(data_dir, "cleaned_data", "cleaned_cricket_data.csv")
+            nested_csv_path = os.path.join(self.data_dir, "cleaned_data", "cleaned_cricket_data.csv")
             if os.path.exists(nested_csv_path):
                 self.cricket_df = pd.read_csv(nested_csv_path)
                 print(f"Loaded cricket data with {len(self.cricket_df)} rows")
@@ -70,77 +74,46 @@ class CricketAnalysisModel:
         print(f"Loaded {len(self.data)} mapping files")
         
     def prepare_training_data(self):
-        """Create training examples from the loaded data using a tiny subset for testing"""
-        print("Preparing training data (tiny subset for testing)...")
-        training_examples = []
+        """Prepare training data from various sources"""
+        print("Preparing training data...")
         
-        # Create examples for each data type - limit to just 2 mappings
-        selected_mappings = list(self.data.keys())[:2]  # Only use first 2 mapping types
-        for data_type in selected_mappings:
-            mapping = self.data[data_type]
-            # Take only 5 items from each mapping
-            sample_mapping = dict(list(mapping.items())[:5])
-            
-            # Create general information about the data
-            overview = f"Here's information about cricket {data_type}:\n"
-            for key, value in sample_mapping.items():
-                overview += f"- {key}: ID {value}\n"
-            overview += f"There are {len(mapping)} {data_type} entries in total."
-            
-            training_examples.append({
-                "instruction": f"Provide an overview of cricket {data_type}.",
-                "input": "",
-                "output": overview
-            })
-            
-            # Create examples for specific lookups - use only the sample items
-            for key, value in sample_mapping.items():
-                training_examples.append({
-                    "instruction": f"What is the ID for {key} in {data_type}?",
-                    "input": "",
-                    "output": f"The ID for {key} in {data_type} is {value}."
-                })
-                
-                training_examples.append({
-                    "instruction": f"What {data_type} corresponds to ID {value}?",
-                    "input": "",
-                    "output": f"ID {value} in {data_type} corresponds to {key}."
-                })
+        training_data = []
         
-        # Add cricket statistics examples if cricket_df is loaded - limit to 10 examples
-        if self.cricket_df is not None:
-            cricket_examples = self._generate_cricket_data_examples()
-            training_examples.extend(cricket_examples[:10])  # Only use first 10 examples
+        # Load any additional data files needed for training
+        if os.path.exists(os.path.join(self.data_dir, 'additional_training_data.json')):
+            additional_data = json.load(open(os.path.join(self.data_dir, 'additional_training_data.json')))
+            training_data.extend(additional_data)
         
-        # Add just 3 examples for cricket rules and terminology
-        cricket_rules = [
-            {
-                "instruction": "Explain the LBW rule in cricket.",
-                "input": "",
-                "output": "LBW (Leg Before Wicket) is a method of dismissal in cricket. A batter is out LBW if the ball would have hit the stumps but was intercepted by any part of the batter's body (except the hand holding the bat). The ball must not pitch outside the leg stump, and the impact must either be in line with the stumps or outside the off stump if the batter is not playing a shot."
-            },
-            {
-                "instruction": "What is a yorker in cricket?",
-                "input": "",
-                "output": "A yorker is a type of delivery in cricket where the ball lands directly at the batter's feet, making it difficult to hit. It's considered one of the most effective deliveries, especially in limited-overs cricket, as it can either result in the batter being bowled or trapped LBW."
-            },
-            {
-                "instruction": "Explain what a duck means in cricket.",
-                "input": "",
-                "output": "In cricket, a 'duck' refers to when a batter is dismissed without scoring any runs (zero). The term comes from the shape of the number '0' resembling a duck's egg. A 'golden duck' specifically means the batter was dismissed on the first ball they faced."
-            }
-        ]
-        training_examples.extend(cricket_rules)
+        # Generate examples from cricket data
+        cricket_examples = self._generate_cricket_data_examples()
+        training_data.extend(cricket_examples)
         
-        print(f"Created {len(training_examples)} training examples (tiny subset)")
-        return training_examples
+        # Generate synthetic examples
+        synthetic_examples = self._generate_synthetic_examples()
+        training_data.extend(synthetic_examples)
+        
+        print(f"Total training examples: {len(training_data)}")
+        return training_data
     
     def _generate_cricket_data_examples(self):
-        """Generate examples from the cricket data CSV"""
-        examples = []
+        """Generate examples from cricket data"""
+        print("Generating cricket data examples...")
+        
+        # Update all file paths to use the data_dir
+        player_mapping = json.load(open(os.path.join(self.data_dir, 'player_mapping.json')))
+        team_mapping = json.load(open(os.path.join(self.data_dir, 'team_mapping.json')))
+        ground_mapping = json.load(open(os.path.join(self.data_dir, 'ground_mapping.json')))
+        
+        # Update any other data file paths
+        batting_data = pd.read_csv(os.path.join(self.data_dir, 'batting_data.csv'))
+        bowling_data = pd.read_csv(os.path.join(self.data_dir, 'bowling_data.csv'))
+        match_data = pd.read_csv(os.path.join(self.data_dir, 'match_data.csv'))
+        
+        # If you have any other data files, update them similarly
+        player_profiles = json.load(open(os.path.join(self.data_dir, 'player_profiles.json')))
+        team_stats = json.load(open(os.path.join(self.data_dir, 'team_stats.json')))
         
         # Convert player IDs to names
-        player_mapping = json.load(open('player_mapping.json'))
         player_id_to_name = {v: k for k, v in player_mapping.items()}
         self.cricket_df['batter_name'] = self.cricket_df['batter'].map(player_id_to_name)
         
@@ -298,21 +271,23 @@ class CricketAnalysisModel:
         # Set padding token to be the same as EOS token
         self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Load model with 4-bit quantization for memory efficiency
+        # RTX 4090 has 24GB VRAM - we can use 8-bit quantization for better quality
+        # while still having enough memory for decent batch sizes
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for better RTX compatibility
             device_map="auto",
-            load_in_4bit=True,
+            load_in_8bit=True,  # 8-bit quantization offers better quality than 4-bit
         )
         
         # Prepare model for k-bit training
         self.model = prepare_model_for_kbit_training(self.model)
         
-        # Apply LoRA
+        # Apply LoRA with slightly higher rank for RTX 4090
+        self.lora_config.r = 32  # Increase LoRA rank from 16 to 32 for better model quality
         self.model = get_peft_model(self.model, self.lora_config)
         
-        print(f"Model initialized with {self.lora_config.r} LoRA rank")
+        print(f"Model initialized with {self.lora_config.r} LoRA rank using 8-bit quantization")
     
     def format_prompt(self, instruction, input_text="", output=None):
         """Format the prompt for the model using phi-2 chat format"""
@@ -348,9 +323,9 @@ class CricketAnalysisModel:
         
         return tokenized
     
-    def train(self, output_dir="cricket_model", num_train_epochs=1, per_device_train_batch_size=4):
-        """Train the model with a tiny subset of data and minimal training"""
-        print("Starting training with minimal parameters for testing...")
+    def train(self, output_dir="cricket_model", num_train_epochs=3, per_device_train_batch_size=8):
+        """Train the model with parameters optimized for RTX 4090"""
+        print("Starting training with RTX 4090 optimized parameters...")
         
         # Prepare training data
         training_data = self.prepare_training_data()
@@ -379,20 +354,22 @@ class CricketAnalysisModel:
         
         tokenized_dataset = train_dataset.map(tokenize_function, remove_columns=["instruction", "input", "output"])
         
-        # Set up training arguments - minimal settings for testing
+        # RTX 4090 optimized training parameters
         training_args = TrainingArguments(
             output_dir=output_dir,
             num_train_epochs=num_train_epochs,
-            per_device_train_batch_size=per_device_train_batch_size,
-            gradient_accumulation_steps=1,
-            warmup_steps=10,
-            max_steps=20,  # Limit to just 20 steps for quick testing
-            learning_rate=1e-4,
-            fp16=True,
-            logging_steps=1,  # Log every step
-            save_steps=10,  # Save only twice during training
-            save_total_limit=2,  # Keep only 2 checkpoints
-            report_to="none",  # Disable wandb or other reporting
+            per_device_train_batch_size=16,  # Increased from 4 to 16 for RTX 4090
+            gradient_accumulation_steps=2,   # Reduced but still accumulating for stability
+            warmup_ratio=0.1,                # Use ratio instead of steps for better scaling
+            learning_rate=2e-4,
+            fp16=True,                       # Use fp16 for RTX 4090 compatibility
+            logging_steps=10,
+            save_strategy="epoch",
+            save_total_limit=2,
+            report_to="none",                # Disable wandb or other reporting
+            optim="adamw_torch",             # Use torch optimizer for better memory efficiency
+            max_grad_norm=0.3,               # Add gradient clipping for stability
+            weight_decay=0.01,               # Add weight decay to prevent overfitting
         )
         
         # Create Trainer
@@ -411,7 +388,7 @@ class CricketAnalysisModel:
         print(f"Model saved to {output_dir}")
     
     def generate_response(self, instruction, input_text="", max_length=512):
-        """Generate a response to a user query"""
+        """Generate a response to a user query with RTX 4090 optimized settings"""
         prompt = self.format_prompt(instruction, input_text)
         
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
@@ -423,7 +400,9 @@ class CricketAnalysisModel:
                 num_return_sequences=1,
                 temperature=0.7,
                 top_p=0.9,
-                do_sample=True
+                do_sample=True,
+                repetition_penalty=1.2,  # Add repetition penalty for better outputs
+                no_repeat_ngram_size=3,  # Prevent repeating 3-grams
             )
         
         response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
